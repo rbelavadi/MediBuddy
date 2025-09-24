@@ -1,0 +1,7 @@
+Include/
+Lib/
+Scripts/
+.env
+pyvenv.cfg
+data/
+debug_processed_image.png
