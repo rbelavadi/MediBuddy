@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { useChatContext } from "@/lib/ChatContext";
 
 function MedicalCrossIcon() {
   return (
@@ -17,6 +18,11 @@ function MedicalCrossIcon() {
 export default function Navbar() {
   const { user, loading } = useUser();
   const router = useRouter();
+  const { chatState, setChatState } = useChatContext();
+
+  function handleNavClick() {
+    if (chatState === "fullscreen") setChatState("expanded");
+  }
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -33,7 +39,7 @@ export default function Navbar() {
       className="sticky top-0 z-50"
     >
       <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-3" aria-label="MediBuddy home">
+        <Link href="/" className="flex items-center gap-3" aria-label="MediBuddy home" onClick={handleNavClick}>
           <MedicalCrossIcon />
           <span
             style={{
@@ -51,6 +57,7 @@ export default function Navbar() {
         <div className="flex items-center gap-6">
           <Link
             href="/"
+            onClick={handleNavClick}
             style={{ fontSize: "1rem", fontWeight: 600, color: "var(--text-secondary)", textDecoration: "none", padding: "6px 4px" }}
             className="hover:text-[#1E6FD9] transition-colors duration-150"
           >
@@ -59,6 +66,7 @@ export default function Navbar() {
 
           <Link
             href="/medications"
+            onClick={handleNavClick}
             style={{ fontSize: "1rem", fontWeight: 600, color: "var(--text-secondary)", textDecoration: "none", padding: "6px 4px" }}
             className="hover:text-[#1E6FD9] transition-colors duration-150"
           >

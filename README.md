@@ -104,7 +104,40 @@ Two independent layers of access control run on every request: application-level
 
 ---
 
-## Current Status — Tier 1 Complete
+## How It Works — Chat Assistant
+
+Once a user has uploaded their medications, a floating **Ask about your medications** button appears on every page. This opens a chat window powered by Claude Haiku with full knowledge of the user's personal medication list.
+
+```
+  💬 User types a question: "Can I take ibuprofen with my heart medication?"
+         │
+         ▼
+  [Next.js API Route: /api/chat]
+         │
+         ├─► 1. Verify JWT session (same as analyze route)
+         │
+         ├─► 2. Fetch user's full medication list from Supabase (server-side)
+         │         └── Never use client-supplied medication data — AI context
+         │               must come from the verified database record
+         │
+         ├─► 3. Build system prompt with medication context injected
+         │         └── Claude knows: medication name, dosage, purpose,
+         │               instructions, side effects, RxNorm code
+         │               Role: warm, patient pharmacist for elderly users
+         │
+         ├─► 4. Call anthropic.messages.stream() with full conversation history
+         │         └── Claude has no memory between API calls — the full
+         │               history is sent on every request to simulate continuity
+         │
+         └─► 5. Stream text_delta events back to ChatWidget
+                   └── Text appears word-by-word while Claude is still typing
+```
+
+**Why streaming matters for this user group:** An 80-year-old reading at a slower pace benefits from seeing text appear progressively — they can start reading while Claude is still generating the answer, rather than staring at a loading spinner for 3–5 seconds.
+
+---
+
+## Current Status — Tiers 1 & 4 Complete
 
 The core pipeline is built and working end-to-end:
 
@@ -117,6 +150,7 @@ The core pipeline is built and working end-to-end:
 - ✅ Personal medication list (`/medications`)
 - ✅ Row Level Security — users can only access their own records
 - ✅ Server-side auth verification on every API call
+- ✅ Floating AI chat assistant — answers questions about the user's medication list
 
 ---
 

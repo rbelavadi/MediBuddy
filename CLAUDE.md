@@ -131,11 +131,41 @@ medibuddy/
 - RLS note added to medications page: `.eq("user_id", user.id)` is belt-and-suspenders
 - `showConfirmation` prop on MedicationCard controls whether "Added to list" banner appears
 
+### Tier 4.5 — AI Chat Assistant (COMPLETE)
+- [x] `app/api/chat/route.ts` — streaming POST endpoint; fetches medications server-side; builds system prompt with full medication context; streams `text_delta` events via `ReadableStream`
+- [x] `components/ChatWidget.tsx` — three-state widget: collapsed (floating button) → expanded (400×500 floating window) → fullscreen (fills viewport below navbar); all states share the same conversation history; state controlled by a single `ChatState` enum; `usePathname` resets fullscreen to expanded on navigation; conversation persists across states but resets on page refresh (persistence across refreshes is a Tier 2 item)
+- [x] `app/layout.tsx` — `<ChatWidget />` added as global component; renders on every page
+
+**Key decisions made in Tier 4.5:**
+- Medications fetched server-side in the API route — AI context must never come from client-supplied data; client could inject fake medication data into the system prompt otherwise
+- Full conversation history sent on every request — Claude is stateless between API calls; there is no session or memory on the API side; the client holds history in React state and sends it each time
+- Streaming chosen over a single response: elderly users read more slowly; streaming lets them start reading immediately rather than waiting 3–5 seconds for a complete response to appear
+- Initial greeting message lives only in client state — it is filtered out before being sent to the API to avoid confusing Claude with a message it didn't generate
+- Widget hides itself (`if (loading || !session) return null`) — avoids rendering a broken chat button on the auth page where no session exists yet
+- Single `ChatState = "collapsed" | "expanded" | "fullscreen"` enum instead of multiple booleans — mutually exclusive states should be modelled as a union type; multiple booleans allow impossible combinations
+- Fullscreen panel: `position: fixed; top: 64px; inset: 0; z-index: 50` — sits below the navbar (z-index 100) and above page content; navbar remains fully clickable
+- `usePathname` from `next/navigation` detects route changes; if `chatState === "fullscreen"` when the path changes, it snaps back to `"expanded"` so fullscreen doesn't persist across page navigations
+- Conversation persistence across browser refreshes deferred to Tier 2 — plan: save messages to a Supabase table keyed by user_id on each send; rehydrate on mount
+- Mobile breakpoint: below 480px, expanded window takes over the full screen (fixed inset: 0) via CSS media query
+
 ### Tier 5 — Interaction Checker (NOT STARTED)
 Cross-reference all of a user's current medications for known interactions.
 
+**Architectural notes for Tier 5:**
+- Use the NLM Drug Interaction API: `https://rxnav.nlm.nih.gov/REST/interaction/list.json?rxcuis=<csv>`
+- Fetch all `rxnorm_code` values (non-null) for the user, pass as comma-separated RxCUI codes
+- API returns interaction pairs with severity levels; surface warnings in a dedicated UI section
+- Medications with `rxnorm_code = null` (RxNorm lookup failed at scan time) must be excluded from the check — note to user that those medications could not be checked
+- Consider a badge on the Navbar or a dedicated `/interactions` page; avoid alarming language
+
 ### Tier 6 — Voice Assistant (NOT STARTED)
 Hands-free Q&A about the user's medication list using Claude + Web Speech API.
+
+**Architectural notes for Tier 6:**
+- Web Speech API (`SpeechRecognition`) handles speech-to-text in the browser — no external STT service needed for MVP
+- Pipe the transcript directly into the existing `ChatWidget` send flow — voice and text share the same `/api/chat` backend
+- Text-to-speech for responses: Web Speech API (`SpeechSynthesis`) can read Claude's reply aloud
+- Key constraint: `SpeechRecognition` is not supported in Safari on iOS — need a fallback UI notice
 
 ---
 

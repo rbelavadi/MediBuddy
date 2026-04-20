@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Lora, Nunito } from "next/font/google";
 import "./globals.css";
+import ChatWidget from "@/components/ChatWidget";
+import { ChatProvider } from "@/lib/ChatContext";
 
 const lora = Lora({
   weight: ["400", "600", "700"],
@@ -32,7 +34,12 @@ export default function RootLayout({
       lang="en"
       className={`${lora.variable} ${nunito.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <ChatProvider>
+          {children}
+          <ChatWidget />
+        </ChatProvider>
+      </body>
     </html>
   );
 }
