@@ -41,27 +41,6 @@ Prescription labels contain Protected Health Information (PHI): patient name, da
 
 3. **Redaction level (Tier 2, now live):** Microsoft Presidio scans the extracted label text and replaces names, addresses, dates of birth, phone numbers, SSNs and prescriber licence numbers with tags like `[PERSON]` and `[DATE]` **before anything is written to the database**. Only the redacted version is stored — the original string exists in memory for the duration of one request and is never inserted, logged, or returned.
 
-   The redaction step is the one dependency in the pipeline that is allowed to fail the
-   whole request. If the Presidio service is unreachable the scan returns `503` and saves
-   nothing, because the only available "fallback" would be storing un-redacted text —
-   precisely the outcome the step exists to prevent. Graceful degradation is the right
-   default for *quality* and the wrong one for *safety*.
-
-   **Presidio is one layer, not a guarantee.** Measured against this service:
-
-   ```
-   input : "1420 Oak Street, Springfield IL 62704"
-   output: "1420 Oak Street, [LOCATION] IL [DATE]"
-   ```
-
-   The city is caught; the **street address is not** — and a street address is a HIPAA
-   identifier. Other known misses: unusual or non-Anglophone names, names that are also
-   common words ("Dr. Hope"), OCR noise ("J0hn Sm1th"), and the fragmentary column layout
-   of a label. Note the bias in that list — the misses concentrate on patients least
-   represented in the model's training data. That is why Presidio sits between two other
-   layers rather than replacing them, and why the claim here is "defense in depth" rather
-   than "PHI-free".
-
 **Image storage deliberately deferred**
 Prescription photos are among the most sensitive documents a person owns. MediBuddy does not store the raw image until Presidio is in place to redact PHI. This is a deliberate architectural decision — not a missing feature, but a privacy-first default. The extracted (and AI-scrubbed) text is stored; the image is not.
 
