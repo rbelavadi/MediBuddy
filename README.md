@@ -39,7 +39,28 @@ Prescription labels contain Protected Health Information (PHI): patient name, da
 
 2. **Application level:** The API route verifies user identity from a cryptographically signed JWT token issued by Supabase, never from data the client sends. A user cannot claim to be someone else.
 
-In Tier 2, Microsoft Presidio (an open-source NLP tool from Microsoft) will scan all extracted text and automatically redact names, addresses, dates of birth, and other PII before anything is stored.
+3. **Redaction level (Tier 2, now live):** Microsoft Presidio scans the extracted label text and replaces names, addresses, dates of birth, phone numbers, SSNs and prescriber licence numbers with tags like `[PERSON]` and `[DATE]` **before anything is written to the database**. Only the redacted version is stored — the original string exists in memory for the duration of one request and is never inserted, logged, or returned.
+
+   The redaction step is the one dependency in the pipeline that is allowed to fail the
+   whole request. If the Presidio service is unreachable the scan returns `503` and saves
+   nothing, because the only available "fallback" would be storing un-redacted text —
+   precisely the outcome the step exists to prevent. Graceful degradation is the right
+   default for *quality* and the wrong one for *safety*.
+
+   **Presidio is one layer, not a guarantee.** Measured against this service:
+
+   ```
+   input : "1420 Oak Street, Springfield IL 62704"
+   output: "1420 Oak Street, [LOCATION] IL [DATE]"
+   ```
+
+   The city is caught; the **street address is not** — and a street address is a HIPAA
+   identifier. Other known misses: unusual or non-Anglophone names, names that are also
+   common words ("Dr. Hope"), OCR noise ("J0hn Sm1th"), and the fragmentary column layout
+   of a label. Note the bias in that list — the misses concentrate on patients least
+   represented in the model's training data. That is why Presidio sits between two other
+   layers rather than replacing them, and why the claim here is "defense in depth" rather
+   than "PHI-free".
 
 **Image storage deliberately deferred**
 Prescription photos are among the most sensitive documents a person owns. MediBuddy does not store the raw image until Presidio is in place to redact PHI. This is a deliberate architectural decision — not a missing feature, but a privacy-first default. The extracted (and AI-scrubbed) text is stored; the image is not.
@@ -64,9 +85,10 @@ Two independent layers of access control run on every request: application-level
          ├─► 1. Verify JWT session server-side (Supabase Auth)
          │         └── Reject if not authenticated
          │
-         ├─► 2. Send image to Claude Haiku (vision)
-         │         └── System prompt extracts: name, dosage, instructions,
-         │               purpose, side effects, raw label text
+         ├─► 2. Send image to Claude Haiku (VISION — extraction only)
+         │         └── Extracts: name, dosage, instructions, raw label text
+         │               Also extracts purpose + side effects, which serve as
+         │               the FALLBACK data source in step 5
          │               PII is stripped from all fields by prompt instruction
          │
          ├─► 3. RxNorm API lookup (NIH)
@@ -74,18 +96,60 @@ Two independent layers of access control run on every request: application-level
          │               (handles global brand names: Crocin → acetaminophen)
          │               Failure is non-fatal → saved as null
          │
-         ├─► 4. Insert to Supabase (Postgres)
+         ├─► 4. Python service: POST /redact  ◄── Microsoft Presidio
+         │         └── NLP detects PHI the prompt missed → replaced with
+         │               [PERSON] / [DATE] / [LOCATION] tags
+         │               ONLY the redacted text is ever stored
+         │               ⚠ If this fails the scan is REFUSED (503) — we never
+         │                 fall back to storing un-redacted text
+         │
+         ├─► 5. Python service: POST /dailymed  ◄── FDA label database
+         │         └── RxCUI → ingredient (RxNav) → official FDA label
+         │               Extracts purpose, dosage, side effects, warnings
+         │               verified: true  → use FDA data, set dailymed_verified
+         │               verified: false → fall back to Claude's extraction
+         │               Fallback is per-field, not all-or-nothing
+         │
+         ├─► 6. Send to Claude Haiku (TEXT — explanation only)
+         │         └── Translates FDA clinical language into plain, warm English
+         │               Told explicitly: explain, do not extract; use only the
+         │               data provided, never your own knowledge
+         │
+         ├─► 7. Insert to Supabase (Postgres)
          │         └── user_id from verified JWT — never from client
-         │               image_url = null until Presidio is in place
+         │               raw_label_text = Presidio output only
+         │               dailymed_verified drives the "FDA Verified" badge
+         │               image_url = null (still deferred)
          │               RLS enforces row-level isolation
          │
-         └─► 5. Return structured record to frontend
+         └─► 8. Return structured record to frontend
                    └── MedicationCard renders:
                          • What it's for (purpose)
                          • How to take it (dosage + instructions)
                          • Side effects to watch for
+                         • "FDA Verified" badge, when earned
                          • "Added to your list" confirmation
 ```
+
+### The "FDA Verified" badge
+
+When a medication card shows a **✓ FDA Verified** badge, it means the purpose, dosage and
+side effects on that card were taken from the official FDA drug label via DailyMed, then
+translated into plain language by Claude. The facts come from the FDA; only the wording is
+AI-generated.
+
+When the badge is **absent**, the information came from AI vision reading the bottle alone.
+That happens routinely and is not an error — DailyMed only covers drugs marketed in the
+United States, so internationally prescribed medications (and compounded preparations)
+legitimately have no entry. MediBuddy explicitly targets a global user base, so this is an
+expected outcome for a meaningful share of users, not an edge case.
+
+Two rules govern the badge:
+
+1. **It is never shown for model-generated content.** Implying FDA backing for text a
+   model produced would be the most damaging thing this app could do.
+2. **Its absence is quiet, not a warning.** The card is still accurate and useful. Flagging
+   provenance in alarming language to an 80-year-old would cost more than it informs.
 
 ---
 
@@ -98,9 +162,11 @@ Two independent layers of access control run on every request: application-level
 | **Tailwind CSS** | Utility-first styling enables fast iteration on accessible, large-text UIs without context-switching to stylesheets |
 | **Supabase** | Postgres + Auth + Storage in one hosted service — eliminates managing three separate infrastructure pieces |
 | **Claude Haiku (Anthropic)** | Fastest, most cost-efficient Claude model with vision capability — sufficient for structured extraction from label images |
-| **RxNorm API (NIH)** | Free, authoritative drug identifier system that normalizes international brand names to canonical codes for interaction checking |
-| **DailyMed API (FDA)** | *(Tier 2)* Official FDA drug label database — grounds AI explanations in verified sources |
-| **Microsoft Presidio** | *(Tier 2)* Open-source NLP PII detection and redaction — scrubs names, addresses, dates before storage |
+| **RxNorm API (NIH)** | Free, authoritative drug identifier system that normalizes international brand names to canonical codes. The RxCUI it returns is also the join key into DailyMed — without it, a bottle labelled "Crocin" could never be matched to a US federal drug label |
+| **DailyMed API (FDA)** | The FDA's official repository of drug labels — the same package-insert text a pharmacist reads. Without it, every word in the app is model output, which for a medication app used by elderly patients is the highest-consequence failure mode in the product. Free, no API key |
+| **Microsoft Presidio** | Open-source PHI detection and redaction. Chosen over regular expressions because most PHI on a prescription label is *contextual*, not patterned: "Patterson" is a person in `Patient: Mary Patterson` and a place in `Patterson Pharmacy, Main St`. A regex sees the same nine characters in both; a trained NER model tells them apart |
+| **spaCy (`en_core_web_lg`)** | The NER model Presidio delegates to for anything name- or place-shaped. Required, not optional — without it Presidio still returns HTTP 200 and simply finds far less PHI, which is the most dangerous failure mode a privacy tool can have. The large model is used because accuracy drops sharply on short fragmentary text, and labels are exactly that |
+| **FastAPI + Python** | Presidio and spaCy are Python-only, so PHI redaction cannot run inside the Next.js process. The cost is a second process to run and deploy; we accept it because the alternative is regex-based PHI detection, which cannot work |
 
 ---
 
@@ -151,14 +217,18 @@ The core pipeline is built and working end-to-end:
 - ✅ Row Level Security — users can only access their own records
 - ✅ Server-side auth verification on every API call
 - ✅ Floating AI chat assistant — answers questions about the user's medication list
+- ✅ **Microsoft Presidio PHI redaction** — only redacted text is ever stored; a redaction
+  failure refuses the save rather than falling back
+- ✅ **DailyMed integration** — explanations grounded in official FDA label data, with a
+  per-field fallback to AI extraction and an "FDA Verified" badge when earned
+- ✅ **Two-stage Claude pipeline** — extraction and explanation separated into distinct calls
 
 ---
 
 ## Roadmap — Tier 2
 
-- [ ] **DailyMed integration** — fetch official FDA label data for every medication; use it to validate and enrich the AI explanation
-- [ ] **Microsoft Presidio PII redaction** — scan extracted text before storage; redact patient name, DOB, address, doctor name, prescription number
-- [ ] **Image storage** — store redacted prescription photos in Supabase Storage (after Presidio is in place)
+- [ ] **Image storage** — store redacted prescription photos in Supabase Storage (now that Presidio is in place)
+- [ ] **Chat history persistence** — save conversations to Postgres so they survive a refresh
 - [ ] **Drug interaction detection** — cross-reference all of a user's RxCUI codes against the NLM interaction API; surface warnings clearly
 - [ ] **Caregiver view** — allow a family member or caregiver to view (read-only) a patient's medication list with explicit consent
 - [ ] **Voice assistant** — hands-free Q&A about the user's medication list using Claude + Web Speech API
@@ -182,17 +252,18 @@ npm install
 
 ```sql
 create table medications (
-  id              uuid primary key default gen_random_uuid(),
-  user_id         uuid references auth.users(id) on delete cascade not null,
-  medication_name text not null,
-  rxnorm_code     text,
-  purpose         text,
-  dosage          text,
-  instructions    text,
-  side_effects    text[],
-  raw_label_text  text,
-  image_url       text,
-  created_at      timestamptz default now() not null
+  id                uuid primary key default gen_random_uuid(),
+  user_id           uuid references auth.users(id) on delete cascade not null,
+  medication_name   text not null,
+  rxnorm_code       text,
+  purpose           text,
+  dosage            text,
+  instructions      text,
+  side_effects      text[],
+  raw_label_text    text,          -- Presidio-redacted text ONLY; never raw label text
+  image_url         text,
+  dailymed_verified boolean default false,  -- drives the "FDA Verified" badge
+  created_at        timestamptz default now() not null
 );
 
 alter table medications enable row level security;
@@ -202,6 +273,14 @@ create policy "Users can manage their own medications"
   using (user_id = auth.uid())
   with check (user_id = auth.uid());
 ```
+
+> **Already have the table from Tier 1?** Add the new column rather than recreating it:
+>
+> ```sql
+> alter table medications add column dailymed_verified boolean default false;
+> ```
+>
+> Without this column every scan will fail at the insert step.
 
 ### 3. Set up environment variables
 
@@ -214,22 +293,70 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 
 # Anthropic — console.anthropic.com → API Keys
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Python microservice (Presidio PHI redaction + DailyMed lookup)
+# Local default; becomes the deployed service URL in production
+PYTHON_SERVICE_URL=http://localhost:8000
 ```
 
 **Where to find these values:**
 - `NEXT_PUBLIC_SUPABASE_URL` — Supabase Dashboard → Project Settings → API → Project URL
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase Dashboard → Project Settings → API → Project API Keys → `anon / public`
 - `ANTHROPIC_API_KEY` — [console.anthropic.com](https://console.anthropic.com) → API Keys → Create Key
+- `PYTHON_SERVICE_URL` — `http://localhost:8000` for local development (see step 4)
 
-> **Note:** The Supabase keys are safe to expose in the browser (they're prefixed `NEXT_PUBLIC_`). The Anthropic key must never be exposed — keep it server-side only and never add `NEXT_PUBLIC_` to it.
+> **Note:** The Supabase keys are safe to expose in the browser (they're prefixed `NEXT_PUBLIC_`). The Anthropic key must never be exposed — keep it server-side only and never add `NEXT_PUBLIC_` to it. `PYTHON_SERVICE_URL` is also deliberately un-prefixed: that service receives un-redacted label text, so it must only ever be reached from the server.
 
-### 4. Run the development server
+### 4. Set up the Python microservice
+
+MediBuddy runs **two processes**. The Next.js app handles the UI and the Claude calls; a
+small FastAPI service handles PHI redaction (Presidio) and FDA label lookups (DailyMed),
+because both of those depend on Python-only libraries. **A scan will fail without it** —
+the redaction step is intentionally not optional.
+
+Full instructions are in [`python-service/README.md`](python-service/README.md). The short version:
+
+```bash
+cd python-service
+
+# Use Python 3.9–3.12. spaCy 3.8 has no wheels for 3.13+, so if `python` on your
+# machine is newer than 3.12, name the version explicitly:
+py -3.12 -m venv venv          # Windows
+# python3.12 -m venv venv      # macOS / Linux
+
+source venv/Scripts/activate   # Windows (Git Bash); PowerShell: venv\Scripts\Activate.ps1
+# source venv/bin/activate     # macOS / Linux
+
+pip install -r requirements.txt
+python -m spacy download en_core_web_lg   # ~400MB, REQUIRED — see note below
+
+uvicorn main:app --reload --port 8000
+```
+
+> **Do not skip the spaCy model download.** Presidio is a framework, not a model — it
+> delegates name and place detection to spaCy's NER. Without the model it still starts and
+> still returns HTTP 200; it just finds far less PHI. Silent degradation is the worst
+> possible failure mode for a privacy tool.
+
+Verify it is up:
+
+```bash
+curl http://localhost:8000/health
+```
+
+### 5. Run the development server
+
+In a **second terminal**, with the Python service still running:
 
 ```bash
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). Create an account at `/auth`, then upload a photo of any medication label on the home page.
+
+> **Both processes must be running.** If you see "We could not safely process your label
+> right now", the Python service on port 8000 is not reachable — that error is the
+> redaction step correctly refusing to save anything rather than storing un-redacted text.
 
 ---
 
@@ -239,4 +366,8 @@ Open [http://localhost:3000](http://localhost:3000). Create an account at `/auth
 - User ID is always sourced from the verified JWT — never from client-supplied data
 - Postgres RLS policies enforce row isolation at the database level as a second layer
 - `.env.local` is excluded from git by `.gitignore` — never commit API keys
-- Raw prescription images are not stored until Presidio PII redaction is implemented (Tier 2)
+- Raw prescription images are still not stored (Presidio is now in place; image storage is the next step)
+- `raw_label_text` contains Presidio-redacted text only. The un-redacted string never reaches the database, the logs, or the client
+- Redaction logs record entity **types and counts**, never matched values — logging the detected PHI would defeat the purpose of redacting it
+- If the redaction service is unreachable, the scan fails closed (`503`) rather than storing un-redacted text
+- The Python service must not be publicly exposed in production — it receives un-redacted label text, so it belongs on a private network behind HTTPS

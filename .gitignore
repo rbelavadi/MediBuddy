@@ -43,3 +43,7 @@ next-env.d.ts
 
 CLAUDE.md
 AGENTS.md
+# python microservice
+__pycache__/
+*.py[cod]
+python-service/venv/

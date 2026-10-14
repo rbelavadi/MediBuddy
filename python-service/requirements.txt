@@ -1,0 +1,12 @@
+# MediBuddy Python microservice dependencies
+#
+# Install with:  pip install -r requirements.txt
+# Then the spaCy NER model, which pip cannot install for you:
+#                python -m spacy download en_core_web_lg
+
+fastapi==0.115.6           # web framework — gives us typed request/response models
+uvicorn[standard]==0.34.0  # ASGI server that actually runs the FastAPI app
+presidio-analyzer==2.2.357 # PII/PHI DETECTION engine (finds entities)
+presidio-anonymizer==2.2.357 # PII/PHI REPLACEMENT engine (rewrites them as tags)
+spacy==3.8.4               # NLP library Presidio delegates named-entity recognition to
+requests==2.32.3           # HTTP client for the RxNav and DailyMed API calls

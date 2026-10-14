@@ -10,6 +10,10 @@ export interface MedicationRecord {
   raw_label_text: string | null;
   image_url: string | null;
   created_at: string;
+  // True when this medication's purpose/dosage/side effects came from the official FDA
+  // drug label (DailyMed) rather than from AI vision alone. Nullable because rows saved
+  // before Tier 2 predate the column.
+  dailymed_verified: boolean | null;
 }
 
 interface MedicationCardProps {
@@ -98,6 +102,37 @@ export default function MedicationCard({
           {medication.rxnorm_code && (
             <span style={{ backgroundColor: "rgba(255,255,255,0.12)", borderRadius: "20px", padding: "4px 14px", fontSize: "0.82rem", fontWeight: 500, opacity: 0.85 }}>
               RxNorm: {medication.rxnorm_code}
+            </span>
+          )}
+          {/*
+            FDA Verified badge — shown ONLY when dailymed_verified is true.
+
+            It is a claim about provenance, so it has to be earned: it means the purpose,
+            dosage and side effects on this card were drawn from the official FDA drug
+            label via DailyMed, then translated into plain language. When DailyMed has no
+            entry (common for internationally prescribed medications) the badge is simply
+            absent — we never imply FDA backing for text that came from AI vision alone.
+            Absence is deliberately quiet rather than a warning: the card is still
+            accurate and useful, and alarming an elderly patient about provenance would
+            cost more than it informs.
+          */}
+          {medication.dailymed_verified && (
+            <span
+              title="The information on this card comes from the official FDA drug label."
+              style={{
+                backgroundColor: "#FFFFFF",
+                color: "#2F855A",
+                borderRadius: "20px",
+                padding: "4px 14px",
+                fontSize: "0.82rem",
+                fontWeight: 700,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+            >
+              <span aria-hidden="true">✓</span>
+              FDA Verified
             </span>
           )}
         </div>
